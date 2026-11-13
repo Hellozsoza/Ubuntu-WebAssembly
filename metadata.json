@@ -1,0 +1,6 @@
+{
+  "name": "Ubuntu Core Aero Wasm",
+  "description": "Windows Vista Aero desktop running Ubuntu Core 24 compiled from Rust to WebAssembly in volatile RAM with multi-threaded Web Workers and virtual disk import/export.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

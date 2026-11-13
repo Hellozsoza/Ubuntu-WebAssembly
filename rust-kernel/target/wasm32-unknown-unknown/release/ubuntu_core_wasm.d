@@ -1,0 +1,1 @@
+/app/applet/rust-kernel/target/wasm32-unknown-unknown/release/ubuntu_core_wasm.wasm: /app/applet/rust-kernel/src/allocator.rs /app/applet/rust-kernel/src/apt.rs /app/applet/rust-kernel/src/disk.rs /app/applet/rust-kernel/src/lib.rs /app/applet/rust-kernel/src/shell.rs /app/applet/rust-kernel/src/smp.rs /app/applet/rust-kernel/src/vfs.rs
