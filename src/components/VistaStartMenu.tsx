@@ -67,7 +67,7 @@ export const VistaStartMenu: React.FC<VistaStartMenuProps> = ({
                 <span className="min-w-0">
                   <span className="block truncate">Ubuntu Terminal</span>
                   <span className="block truncate text-[10.5px] font-normal text-[#54697e]">
-                    Open new Aero shell
+                    Open new Linux PTY shell
                   </span>
                 </span>
               </button>
@@ -83,7 +83,7 @@ export const VistaStartMenu: React.FC<VistaStartMenuProps> = ({
                 <span className="min-w-0">
                   <span className="block truncate">Virtual Disk Manager</span>
                   <span className="block truncate text-[10.5px] font-normal text-[#54697e]">
-                    Import / Export .ubuntudisk
+                    Export / Import .v86state
                   </span>
                 </span>
               </button>
@@ -97,9 +97,9 @@ export const VistaStartMenu: React.FC<VistaStartMenuProps> = ({
                   <Cpu className="h-4 w-4" />
                 </span>
                 <span className="min-w-0">
-                  <span className="block truncate">SMP Resource Monitor</span>
+                  <span className="block truncate">VM &amp; SMP Monitor</span>
                   <span className="block truncate text-[10.5px] font-normal text-[#54697e]">
-                    Worker threads & RAM
+                    v86.wasm MIPS &amp; threads
                   </span>
                 </span>
               </button>
@@ -113,9 +113,9 @@ export const VistaStartMenu: React.FC<VistaStartMenuProps> = ({
                   <FileCode2 className="h-4 w-4" />
                 </span>
                 <span className="min-w-0">
-                  <span className="block truncate">Rust Kernel Source</span>
+                  <span className="block truncate">Rust Wasm Base</span>
                   <span className="block truncate text-[10.5px] font-normal text-[#54697e]">
-                    Inspect wasm32 crate
+                    Inspect SMP Rust crate
                   </span>
                 </span>
               </button>
@@ -137,8 +137,8 @@ export const VistaStartMenu: React.FC<VistaStartMenuProps> = ({
                   <User className="h-5 w-5 text-white" />
                 </div>
                 <div className="min-w-0">
-                  <div className="truncate text-[13px] font-semibold">ubuntu</div>
-                  <div className="truncate text-[10.5px] text-sky-200/80">Ubuntu Core 24</div>
+                  <div className="truncate text-[13px] font-semibold">root</div>
+                  <div className="truncate text-[10.5px] text-sky-200/80">Ubuntu 24.04 LTS</div>
                 </div>
               </div>
 
@@ -169,7 +169,7 @@ export const VistaStartMenu: React.FC<VistaStartMenuProps> = ({
                 className="flex w-full items-center gap-2 rounded border border-white/25 bg-white/10 px-2.5 py-1.5 text-[12px] font-semibold text-white transition-colors hover:bg-white/20"
               >
                 <Power className="h-3.5 w-3.5 text-amber-300" />
-                <span>Reboot & Hardware...</span>
+                <span>Reboot &amp; Hardware...</span>
               </button>
             </div>
           </div>

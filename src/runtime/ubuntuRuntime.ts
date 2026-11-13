@@ -1,8 +1,8 @@
 export interface HardwareConfig {
   cpuCores: number;
   ramMb: number;
-  customDiskBytes?: ArrayBuffer | null;
-  customDiskName?: string | null;
+  customStateBytes?: ArrayBuffer | null;
+  customStateName?: string | null;
 }
 
 export interface BootProgress {
@@ -10,18 +10,14 @@ export interface BootProgress {
   percent: number;
 }
 
-export interface KernelStats {
-  cpu_cores: number;
-  ram_limit_mb: number;
-  files: number;
-  dirs: number;
-  vfs_bytes: number;
-  heap_used: number;
-  heap_cap: number;
-  snaps: number;
-  crc32: string;
-  hostname: string;
-  allocated_ram_bytes: number;
+export interface VmTelemetry {
+  ramMb: number;
+  cpuCores: number;
+  muxReady: boolean;
+  instructionsTotal: number;
+  instructionsPerSec: number;
+  aptBytesProxied: number;
+  openPtys: number;
 }
 
 export interface WorkerCoreStatus {
@@ -30,15 +26,6 @@ export interface WorkerCoreStatus {
   tasksCompleted: number;
   lastElapsedMs: number;
   totalComputeMs: number;
-}
-
-export interface ExecResult {
-  exit_code: number;
-  clear: boolean;
-  cwd: string;
-  user: string;
-  stdout: string;
-  stderr: string;
 }
 
 export interface SmpBenchmarkReport {
@@ -54,8 +41,14 @@ type PendingResolver = {
   reject: (reason?: any) => void;
 };
 
+type PtyListener = {
+  onData: (data: string) => void;
+  onExit: () => void;
+  onError: (err: string) => void;
+};
+
 export class UbuntuWasmRuntime {
-  private coordinator: Worker | null = null;
+  private vmWorker: Worker | null = null;
   private smpWorkers: Worker[] = [];
   private sharedTelemetry: SharedArrayBuffer | null = null;
   private telemetryView: Int32Array | null = null;
@@ -63,6 +56,13 @@ export class UbuntuWasmRuntime {
   private coreStatuses: WorkerCoreStatus[] = [];
   private bootTimestamp = Date.now();
   private booted = false;
+  private muxReady = false;
+  private bootLogs: string[] = [];
+  private bootLogListeners = new Set<(line: string) => void>();
+  private muxReadyListeners = new Set<() => void>();
+  private ptyListeners = new Map<string, PtyListener>();
+  private ptyBuffers = new Map<string, string[]>();
+  private openPtySet = new Set<string>();
   private config: HardwareConfig = { cpuCores: 4, ramMb: 512 };
   private threadingMode: 'SharedArrayBuffer + Atomics' | 'Parallel Web Workers (MessagePort)' =
     'Parallel Web Workers (MessagePort)';
@@ -72,8 +72,16 @@ export class UbuntuWasmRuntime {
     return this.booted;
   }
 
+  public isMuxReady() {
+    return this.muxReady;
+  }
+
   public getConfig() {
     return this.config;
+  }
+
+  public getBootLogs(): string[] {
+    return [...this.bootLogs];
   }
 
   public getThreadingMode() {
@@ -108,20 +116,43 @@ export class UbuntuWasmRuntime {
     };
   }
 
+  public subscribeBootLogs(fn: (line: string) => void) {
+    this.bootLogListeners.add(fn);
+    return () => {
+      this.bootLogListeners.delete(fn);
+    };
+  }
+
+  public subscribeMuxReady(fn: () => void) {
+    if (this.muxReady) {
+      fn();
+      return () => {};
+    }
+    this.muxReadyListeners.add(fn);
+    return () => {
+      this.muxReadyListeners.delete(fn);
+    };
+  }
+
   private notifyListeners() {
     this.statusListeners.forEach((fn) => fn());
   }
 
   public shutdown() {
-    if (this.coordinator) {
-      this.coordinator.terminate();
-      this.coordinator = null;
+    if (this.vmWorker) {
+      this.vmWorker.terminate();
+      this.vmWorker = null;
     }
     for (const w of this.smpWorkers) {
       w.terminate();
     }
     this.smpWorkers = [];
     this.pending.clear();
+    this.ptyListeners.clear();
+    this.ptyBuffers.clear();
+    this.openPtySet.clear();
+    this.bootLogs = [];
+    this.muxReady = false;
     this.sharedTelemetry = null;
     this.telemetryView = null;
     this.coreStatuses = [];
@@ -132,17 +163,17 @@ export class UbuntuWasmRuntime {
     return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
   }
 
-  private sendCoordinator<T>(payload: Record<string, unknown>, transfer?: Transferable[]): Promise<T> {
-    if (!this.coordinator) {
-      return Promise.reject(new Error('Kernel coordinator worker not active'));
+  private sendVmRequest<T>(payload: Record<string, unknown>, transfer?: Transferable[]): Promise<T> {
+    if (!this.vmWorker) {
+      return Promise.reject(new Error('Ubuntu VM worker not active'));
     }
     const reqId = this.nextReqId();
     return new Promise<T>((resolve, reject) => {
       this.pending.set(reqId, { resolve, reject });
       if (transfer && transfer.length > 0) {
-        this.coordinator!.postMessage({ ...payload, reqId }, transfer);
+        this.vmWorker!.postMessage({ ...payload, reqId }, transfer);
       } else {
-        this.coordinator!.postMessage({ ...payload, reqId });
+        this.vmWorker!.postMessage({ ...payload, reqId });
       }
     });
   }
@@ -150,77 +181,146 @@ export class UbuntuWasmRuntime {
   public async boot(
     cfg: HardwareConfig,
     onProgress?: (p: BootProgress) => void
-  ): Promise<{ files: number; dirs: number; allocatedRamBytes: number }> {
+  ): Promise<void> {
     this.shutdown();
     this.config = cfg;
     this.bootTimestamp = Date.now();
 
-    onProgress?.({ stage: 'Fetching compiled Rust WebAssembly kernel into RAM...', percent: 15 });
-    const wasmResp = await fetch('/ubuntu_core.wasm', { cache: 'no-store' });
-    if (!wasmResp.ok) {
-      throw new Error(`Failed to fetch /ubuntu_core.wasm (${wasmResp.status})`);
-    }
-    const wasmBytes = await wasmResp.arrayBuffer();
+    onProgress?.({ stage: 'Streaming SeaBIOS & VGA firmware into RAM...', percent: 12 });
+    const [biosResp, vgaBiosResp, smpWasmResp] = await Promise.all([
+      fetch('/api/ubuntu-core/seabios.bin', { cache: 'no-store' }),
+      fetch('/api/ubuntu-core/vgabios.bin', { cache: 'no-store' }),
+      fetch('/ubuntu_core.wasm', { cache: 'no-store' }),
+    ]);
 
-    let diskBytes: ArrayBuffer;
-    if (cfg.customDiskBytes) {
+    if (!biosResp.ok) throw new Error(`Failed to load seabios.bin (${biosResp.status})`);
+    if (!vgaBiosResp.ok) throw new Error(`Failed to load vgabios.bin (${vgaBiosResp.status})`);
+    if (!smpWasmResp.ok) throw new Error(`Failed to load ubuntu_core.wasm (${smpWasmResp.status})`);
+
+    const [biosBuf, vgaBiosBuf, smpWasmBytes] = await Promise.all([
+      biosResp.arrayBuffer(),
+      vgaBiosResp.arrayBuffer(),
+      smpWasmResp.arrayBuffer(),
+    ]);
+
+    let bzimageBuf: ArrayBuffer | null = null;
+    let initrdBuf: ArrayBuffer | null = null;
+    let stateBuf: ArrayBuffer | null = null;
+
+    if (cfg.customStateBytes) {
       onProgress?.({
-        stage: `Loading virtual disk "${cfg.customDiskName || 'image'}" straight into RAM...`,
-        percent: 38,
+        stage: `Loading RAM snapshot "${cfg.customStateName || 'vm.v86state'}" into memory...`,
+        percent: 45,
       });
-      diskBytes = cfg.customDiskBytes.slice(0);
+      stateBuf = cfg.customStateBytes.slice(0);
     } else {
       onProgress?.({
-        stage: 'Streaming Ubuntu Core 24 rootfs from server straight into RAM...',
+        stage: 'Streaming Linux kernel (6.1 LTS i686) & Ubuntu 24.04 LTS rootfs into RAM...',
         percent: 38,
       });
-      const diskResp = await fetch('/api/ubuntu-core/image', { cache: 'no-store' });
-      if (!diskResp.ok) {
-        throw new Error(`Failed to stream Ubuntu Core image (${diskResp.status})`);
-      }
-      diskBytes = await diskResp.arrayBuffer();
+      const [bzResp, initrdResp] = await Promise.all([
+        fetch('/api/ubuntu-core/vmlinuz', { cache: 'no-store' }),
+        fetch('/api/ubuntu-core/initrd', { cache: 'no-store' }),
+      ]);
+      if (!bzResp.ok) throw new Error(`Failed to stream vmlinuz (${bzResp.status})`);
+      if (!initrdResp.ok) throw new Error(`Failed to stream Ubuntu initrd (${initrdResp.status})`);
+      [bzimageBuf, initrdBuf] = await Promise.all([
+        bzResp.arrayBuffer(),
+        initrdResp.arrayBuffer(),
+      ]);
     }
 
     onProgress?.({
-      stage: `Allocating ${cfg.ramMb} MB volatile RAM & initializing Rust Wasm VFS...`,
-      percent: 60,
+      stage: `Starting v86.wasm x86 VM Worker with ${cfg.ramMb} MB volatile RAM...`,
+      percent: 68,
     });
 
-    this.coordinator = new Worker(
-      new URL('../workers/kernelCoordinator.worker.ts', import.meta.url),
-      { type: 'module' }
-    );
-    this.coordinator.onmessage = (ev) => {
+    this.vmWorker = new Worker(new URL('../workers/ubuntuVm.worker.ts', import.meta.url), {
+      type: 'module',
+    });
+
+    this.vmWorker.onmessage = (ev) => {
       const msg = ev.data;
-      const resolver = this.pending.get(msg.reqId);
-      if (!resolver) return;
-      this.pending.delete(msg.reqId);
-      if (msg.type === 'error') {
-        resolver.reject(new Error(msg.error));
-      } else {
-        resolver.resolve(msg);
+      if (msg.type === 'boot_log') {
+        this.bootLogs.push(msg.text);
+        if (this.bootLogs.length > 300) {
+          this.bootLogs.shift();
+        }
+        this.bootLogListeners.forEach((fn) => fn(msg.text));
+        return;
+      }
+
+      if (msg.type === 'mux_ready') {
+        this.muxReady = true;
+        this.muxReadyListeners.forEach((fn) => fn());
+        this.muxReadyListeners.clear();
+        this.notifyListeners();
+        return;
+      }
+
+      if (msg.type === 'pty_opened') {
+        this.openPtySet.add(msg.termId);
+        this.notifyListeners();
+        return;
+      }
+
+      if (msg.type === 'pty_output') {
+        const listener = this.ptyListeners.get(msg.termId);
+        if (listener) {
+          listener.onData(msg.data);
+        } else {
+          const buf = this.ptyBuffers.get(msg.termId) || [];
+          buf.push(msg.data);
+          this.ptyBuffers.set(msg.termId, buf);
+        }
+        return;
+      }
+
+      if (msg.type === 'pty_exit') {
+        this.openPtySet.delete(msg.termId);
+        this.ptyListeners.get(msg.termId)?.onExit();
+        this.notifyListeners();
+        return;
+      }
+
+      if (msg.type === 'pty_error') {
+        this.ptyListeners.get(msg.termId)?.onError(msg.error);
+        return;
+      }
+
+      if (msg.reqId) {
+        const resolver = this.pending.get(msg.reqId);
+        if (!resolver) return;
+        this.pending.delete(msg.reqId);
+        if (msg.type === 'error') {
+          resolver.reject(new Error(msg.error));
+        } else {
+          resolver.resolve(msg);
+        }
       }
     };
 
-    const wasmClone = wasmBytes.slice(0);
-    const bootRes = await this.sendCoordinator<{
-      allocatedRamBytes: number;
-      files: number;
-      dirs: number;
-    }>(
+    const transfers: Transferable[] = [biosBuf, vgaBiosBuf];
+    if (bzimageBuf) transfers.push(bzimageBuf);
+    if (initrdBuf) transfers.push(initrdBuf);
+    if (stateBuf) transfers.push(stateBuf);
+
+    await this.sendVmRequest(
       {
         type: 'boot',
-        cpuCores: cfg.cpuCores,
         ramMb: cfg.ramMb,
-        wasmBytes: wasmClone,
-        diskBytes,
+        biosBuf,
+        vgaBiosBuf,
+        bzimageBuf,
+        initrdBuf,
+        stateBuf,
       },
-      [wasmClone, diskBytes]
+      transfers
     );
 
     onProgress?.({
-      stage: `Spawning ${cfg.cpuCores} multi-threaded WebAssembly worker cores...`,
-      percent: 82,
+      stage: `Spawning ${cfg.cpuCores} parallel Rust Wasm SMP compute worker(s)...`,
+      percent: 86,
     });
 
     const canSab = typeof SharedArrayBuffer !== 'undefined' && window.crossOriginIsolated;
@@ -233,7 +333,7 @@ export class UbuntuWasmRuntime {
       this.telemetryView = new Int32Array(this.sharedTelemetry);
     }
 
-    const compiledModule = await WebAssembly.compile(wasmBytes);
+    const compiledModule = await WebAssembly.compile(smpWasmBytes);
     this.coreStatuses = Array.from({ length: cfg.cpuCores }, (_, coreId) => ({
       coreId,
       state: 'booting',
@@ -274,80 +374,85 @@ export class UbuntuWasmRuntime {
     await Promise.all(workerReadyPromises);
     this.booted = true;
     this.notifyListeners();
-    onProgress?.({ stage: 'Ubuntu Core 24 ready in volatile RAM.', percent: 100 });
-
-    return bootRes;
+    onProgress?.({
+      stage: 'Linux kernel booting in v86.wasm RAM — opening Aero desktop...',
+      percent: 100,
+    });
   }
 
-  public async execCommand(
-    cwd: string,
-    cmd: string,
-    threadId: number,
-    isRoot = true
-  ): Promise<ExecResult> {
-    const res = await this.sendCoordinator<{ result: ExecResult }>({
-      type: 'exec',
-      cwd,
-      cmd,
-      uptimeSecs: this.getUptimeSeconds(),
-      threadId,
-      isRoot,
-    });
+  public attachPty(termId: string, cols: number, rows: number, listener: PtyListener): () => void {
+    this.ptyListeners.set(termId, listener);
+    const pendingChunks = this.ptyBuffers.get(termId);
+    if (pendingChunks && pendingChunks.length > 0) {
+      for (const c of pendingChunks) {
+        listener.onData(c);
+      }
+      this.ptyBuffers.delete(termId);
+    }
+
+    const openNow = () => {
+      if (!this.vmWorker) return;
+      this.vmWorker.postMessage({ type: 'open_pty', termId, cols, rows });
+    };
+
+    const unsubMux = this.subscribeMuxReady(openNow);
+
+    return () => {
+      unsubMux();
+      this.ptyListeners.delete(termId);
+      this.ptyBuffers.delete(termId);
+      this.openPtySet.delete(termId);
+      this.vmWorker?.postMessage({ type: 'close_pty', termId });
+    };
+  }
+
+  public sendPtyInput(termId: string, data: string) {
+    this.vmWorker?.postMessage({ type: 'pty_input', termId, data });
+  }
+
+  public resizePty(termId: string, cols: number, rows: number) {
+    this.vmWorker?.postMessage({ type: 'pty_resize', termId, cols, rows });
+  }
+
+  public async getTelemetry(): Promise<VmTelemetry> {
+    if (!this.vmWorker) {
+      return {
+        ramMb: this.config.ramMb,
+        cpuCores: this.config.cpuCores,
+        muxReady: false,
+        instructionsTotal: 0,
+        instructionsPerSec: 0,
+        aptBytesProxied: 0,
+        openPtys: 0,
+      };
+    }
+    const res = await this.sendVmRequest<{
+      muxReady: boolean;
+      instructionsTotal: number;
+      instructionsPerSec: number;
+      aptBytesProxied: number;
+    }>({ type: 'telemetry' });
+
+    return {
+      ramMb: this.config.ramMb,
+      cpuCores: this.config.cpuCores,
+      muxReady: res.muxReady,
+      instructionsTotal: res.instructionsTotal,
+      instructionsPerSec: res.instructionsPerSec,
+      aptBytesProxied: res.aptBytesProxied,
+      openPtys: this.openPtySet.size,
+    };
+  }
+
+  public async exportVmState(): Promise<ArrayBuffer> {
+    const res = await this.sendVmRequest<{ stateBuf: ArrayBuffer }>({ type: 'save_state' });
+    return res.stateBuf;
+  }
+
+  public async importVmState(stateBuf: ArrayBuffer): Promise<void> {
+    const copy = stateBuf.slice(0);
+    await this.sendVmRequest({ type: 'restore_state', stateBuf: copy }, [copy]);
     this.notifyListeners();
-    return res.result;
-  }
-
-  public async autocomplete(cwd: string, prefix: string): Promise<string[]> {
-    const res = await this.sendCoordinator<{ matches: string[] }>({
-      type: 'autocomplete',
-      cwd,
-      prefix,
-    });
-    return res.matches;
-  }
-
-  public async readFile(path: string): Promise<{ ok: boolean; content: string }> {
-    return this.sendCoordinator<{ ok: boolean; content: string }>({
-      type: 'read_file',
-      path,
-    });
-  }
-
-  public async writeFile(path: string, content: string): Promise<{ ok: boolean }> {
-    const res = await this.sendCoordinator<{ ok: boolean }>({
-      type: 'write_file',
-      path,
-      content,
-    });
-    this.notifyListeners();
-    return res;
-  }
-
-  public async getStats(): Promise<KernelStats> {
-    const res = await this.sendCoordinator<{ stats: KernelStats }>({
-      type: 'stats',
-    });
-    return res.stats;
-  }
-
-  public async exportVirtualDisk(format: 'ubuntudisk' | 'tar'): Promise<Uint8Array> {
-    const res = await this.sendCoordinator<{ bytes: ArrayBuffer }>({
-      type: 'export_disk',
-      formatTar: format === 'tar',
-    });
-    return new Uint8Array(res.bytes);
-  }
-
-  public async importVirtualDisk(
-    bytes: ArrayBuffer
-  ): Promise<{ ok: boolean; files?: number; dirs?: number; error?: string }> {
-    const copy = bytes.slice(0);
-    const res = await this.sendCoordinator<{
-      rc: number;
-      result: { ok: boolean; files?: number; dirs?: number; error?: string };
-    }>({ type: 'import_disk', diskBytes: copy }, [copy]);
-    this.notifyListeners();
-    return res.result;
   }
 
   public async runParallelPrimes(maxN: number): Promise<SmpBenchmarkReport> {
@@ -398,41 +503,6 @@ export class UbuntuWasmRuntime {
       threadsUsed: activeCount,
       totalWallMs,
       aggregateResult: `${totalHashes.toLocaleString()} Rust Wasm hashes completed`,
-      perCore,
-    };
-  }
-
-  public async runParallelMandelbrot(
-    width = 640,
-    height = 480,
-    maxIter = 120
-  ): Promise<SmpBenchmarkReport> {
-    const nWorkers = this.smpWorkers.length || 1;
-    const sliceH = Math.ceil(height / nWorkers);
-    const t0 = performance.now();
-
-    const perCore = await Promise.all(
-      this.smpWorkers.map((worker, idx) => {
-        const yStart = idx * sliceH;
-        const yEnd = Math.min(height, (idx + 1) * sliceH);
-        return this.dispatchWorkerTask(worker, idx, 'run_mandelbrot', [
-          yStart,
-          yEnd,
-          width,
-          height,
-          maxIter,
-        ]);
-      })
-    );
-
-    const totalWallMs = performance.now() - t0;
-    const totalIters = perCore.reduce((acc, c) => acc + BigInt(c.result), 0n);
-
-    return {
-      workload: `Parallel Mandelbrot ${width}x${height} (${maxIter} max iter)`,
-      threadsUsed: nWorkers,
-      totalWallMs,
-      aggregateResult: `${totalIters.toLocaleString()} escape iterations`,
       perCore,
     };
   }

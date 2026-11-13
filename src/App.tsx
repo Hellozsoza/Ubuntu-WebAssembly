@@ -75,10 +75,10 @@ export default function App() {
       const win: DesktopWindow = {
         id,
         kind: 'terminal',
-        title: `root@ubuntu-core: ~ — Terminal #${idx} (Core #${threadSlot})`,
+        title: `root@ubuntu-core — Terminal #${idx} (/dev/pts/${Math.max(0, idx - 1)})`,
         terminalIndex: idx,
         threadSlot,
-        geometry: computeCenteredGeometry(780, 480, offset - 30),
+        geometry: computeCenteredGeometry(800, 490, offset - 30),
         isMinimized: false,
         isMaximized: false,
         zIndex: z,
@@ -106,19 +106,19 @@ export default function App() {
         { title: string; w: number; h: number; offset: number }
       > = {
         disk: {
-          title: 'Virtual Disk Manager — Volatile RAM Import & Export',
+          title: 'Virtual Disk Manager — Volatile RAM Snapshots',
           w: 660,
-          h: 520,
+          h: 500,
           offset: 36,
         },
         smp: {
-          title: 'SMP Multi-Threading & RAM Monitor',
+          title: 'VM & SMP Multi-Threading Monitor',
           w: 700,
           h: 510,
           offset: 56,
         },
         source: {
-          title: 'Rust Kernel Source (wasm32-unknown-unknown)',
+          title: 'Rust Wasm Base (v86.wasm + SMP Crate)',
           w: 820,
           h: 540,
           offset: 20,
@@ -390,18 +390,6 @@ export default function App() {
               totalThreads={hardware.cpuCores}
               ramMb={hardware.ramMb}
               onSpawnTerminal={() => spawnTerminal()}
-              onCwdChange={(nextCwd, nextUser) => {
-                setWindows((prev) =>
-                  prev.map((item) =>
-                    item.id === win.id
-                      ? {
-                          ...item,
-                          title: `${nextUser}@ubuntu-core: ${nextCwd} — Terminal #${win.terminalIndex} (Core #${win.threadSlot})`,
-                        }
-                      : item
-                  )
-                );
-              }}
             />
           )}
           {win.kind === 'disk' && <VirtualDiskManager />}

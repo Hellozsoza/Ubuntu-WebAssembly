@@ -51,20 +51,25 @@ export const VistaTaskbar: React.FC<VistaTaskbarProps> = ({
           aria-label="Open Start Menu"
           aria-expanded={startOpen}
           onClick={onToggleStart}
-          className={`aero-start-orb -my-1 shrink-0 focus-visible:outline-2 focus-visible:outline-sky-300 ${
+          className={`aero-start-orb shrink-0 focus-visible:outline-2 focus-visible:outline-sky-300 ${
             startOpen ? 'aero-start-orb-open' : ''
           }`}
         >
           {/* Layered 3D Glass Windows Vista Start Orb SVG */}
-          <svg viewBox="0 0 48 48" className="h-[44px] w-[44px]" aria-hidden="true">
+          <svg
+            viewBox="0 0 48 48"
+            preserveAspectRatio="xMidYMid meet"
+            className="block h-[42px] w-[42px] shrink-0"
+            aria-hidden="true"
+          >
             <defs>
-              <radialGradient id="vistaOrbBase" cx="50%" cy="52%" r="52%">
-                <stop offset="0%" stopColor="#1e6fb8" />
-                <stop offset="48%" stopColor="#0f3c6e" />
-                <stop offset="82%" stopColor="#071e3a" />
+              <radialGradient id="vistaOrbBase" cx="50%" cy="50%" r="50%">
+                <stop offset="0%" stopColor="#247bc9" />
+                <stop offset="50%" stopColor="#0f3c6e" />
+                <stop offset="84%" stopColor="#071e3a" />
                 <stop offset="100%" stopColor="#041122" />
               </radialGradient>
-              <radialGradient id="vistaOrbGlow" cx="50%" cy="88%" r="50%">
+              <radialGradient id="vistaOrbGlow" cx="50%" cy="86%" r="52%">
                 <stop offset="0%" stopColor="#2dd4bf" stopOpacity="0.62" />
                 <stop offset="65%" stopColor="#38bdf8" stopOpacity="0.18" />
                 <stop offset="100%" stopColor="#38bdf8" stopOpacity="0" />
@@ -86,22 +91,22 @@ export const VistaTaskbar: React.FC<VistaTaskbarProps> = ({
             {/* Lower Emerald-Aqua Bounce Light */}
             <circle cx="24" cy="24" r="20.5" fill="url(#vistaOrbGlow)" />
 
-            {/* Waving 4-Pane Flag Emblem */}
-            <g transform="translate(0, 0.5)">
+            {/* Geometrically Centered 4-Pane Waving Flag Emblem */}
+            <g transform="translate(0.4, -0.15)">
               <path
-                d="M12.5 16.4 C16.2 14.5, 19.6 14.9, 23 16.4 L21.5 23.1 C18.2 21.8, 14.9 21.5, 11.2 23.2 Z"
+                d="M14.0 15.6 C17.2 14.0, 20.4 14.0, 23.3 15.5 L22.8 23.2 C19.9 21.8, 16.7 21.8, 13.5 23.3 Z"
                 fill="#ef4444"
               />
               <path
-                d="M24.8 17.0 C28.2 18.4, 31.6 18.4, 35.2 16.6 L33.6 23.4 C30.1 25.0, 26.8 25.0, 23.3 23.6 Z"
+                d="M24.9 16.1 C27.9 17.6, 31.1 17.6, 34.4 16.0 L33.9 23.6 C30.6 25.1, 27.4 25.1, 24.4 23.7 Z"
                 fill="#22c55e"
               />
               <path
-                d="M10.8 24.8 C14.5 23.1, 17.8 23.4, 21.1 24.7 L19.6 31.4 C16.3 30.1, 13.0 29.8, 9.3 31.5 Z"
+                d="M13.3 24.9 C16.5 23.4, 19.7 23.4, 22.6 24.8 L22.1 32.4 C19.2 31.0, 16.0 31.0, 12.8 32.5 Z"
                 fill="#38bdf8"
               />
               <path
-                d="M22.9 25.2 C26.4 26.6, 29.7 26.6, 33.2 25.0 L31.6 31.8 C28.1 33.4, 24.8 33.4, 21.3 32.0 Z"
+                d="M24.2 25.3 C27.2 26.7, 30.4 26.7, 33.7 25.2 L33.2 32.8 C29.9 34.3, 26.7 34.3, 23.7 32.9 Z"
                 fill="#facc15"
               />
             </g>

@@ -1,51 +1,46 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Download, RefreshCw, Upload } from 'lucide-react';
-import { ubuntuRuntime, type KernelStats } from '../runtime/ubuntuRuntime';
+import { ubuntuRuntime, type VmTelemetry } from '../runtime/ubuntuRuntime';
 
 export const VirtualDiskManager: React.FC = () => {
-  const [stats, setStats] = useState<KernelStats | null>(null);
+  const [telemetry, setTelemetry] = useState<VmTelemetry | null>(null);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [isWorking, setIsWorking] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const refreshStats = async () => {
+  const refreshTelemetry = async () => {
     try {
-      const s = await ubuntuRuntime.getStats();
-      setStats(s);
+      const t = await ubuntuRuntime.getTelemetry();
+      setTelemetry(t);
     } catch {
       // ignore if shutting down
     }
   };
 
   useEffect(() => {
-    refreshStats();
+    refreshTelemetry();
     const unsub = ubuntuRuntime.subscribe(() => {
-      refreshStats();
+      refreshTelemetry();
     });
-    const timer = setInterval(refreshStats, 2500);
+    const timer = setInterval(refreshTelemetry, 2000);
     return () => {
       unsub();
       clearInterval(timer);
     };
   }, []);
 
-  const handleExport = async (format: 'ubuntudisk' | 'tar') => {
+  const handleExportSnapshot = async () => {
     setIsWorking(true);
     setErrorMsg(null);
     setStatusMsg(null);
     try {
-      const bytes = await ubuntuRuntime.exportVirtualDisk(format);
-      const copy = new Uint8Array(bytes.byteLength);
-      copy.set(bytes);
-      const blob = new Blob([copy.buffer], { type: 'application/octet-stream' });
+      const buf = await ubuntuRuntime.exportVmState();
+      const blob = new Blob([buf], { type: 'application/octet-stream' });
       const url = URL.createObjectURL(blob);
       const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-');
-      const filename =
-        format === 'tar'
-          ? `ubuntu-core-ramfs-${stamp}.tar`
-          : `ubuntu-core-ramfs-${stamp}.ubuntudisk`;
+      const filename = `ubuntu-24.04-ram-${stamp}.v86state`;
 
       const a = document.createElement('a');
       a.href = url;
@@ -56,7 +51,7 @@ export const VirtualDiskManager: React.FC = () => {
       URL.revokeObjectURL(url);
 
       setStatusMsg(
-        `Exported ${filename} (${(bytes.length / 1024).toFixed(1)} KB) directly from RAM.`
+        `Exported ${filename} (${(buf.byteLength / (1024 * 1024)).toFixed(1)} MB) directly from live VM RAM.`
       );
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : String(err));
@@ -71,34 +66,10 @@ export const VirtualDiskManager: React.FC = () => {
     setStatusMsg(null);
     try {
       const buffer = await file.arrayBuffer();
-      const res = await ubuntuRuntime.importVirtualDisk(buffer);
-      if (!res.ok) {
-        throw new Error(res.error || 'Failed to mount virtual disk');
-      }
-      await refreshStats();
+      await ubuntuRuntime.importVmState(buffer);
+      await refreshTelemetry();
       setStatusMsg(
-        `Mounted "${file.name}" into volatile RAM (${res.files ?? 0} files, ${res.dirs ?? 0} directories).`
-      );
-    } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : String(err));
-    } finally {
-      setIsWorking(false);
-    }
-  };
-
-  const handleResetToServer = async () => {
-    setIsWorking(true);
-    setErrorMsg(null);
-    setStatusMsg(null);
-    try {
-      const resp = await fetch('/api/ubuntu-core/image', { cache: 'no-store' });
-      if (!resp.ok) throw new Error('Failed to stream fresh server image');
-      const buf = await resp.arrayBuffer();
-      const res = await ubuntuRuntime.importVirtualDisk(buf);
-      if (!res.ok) throw new Error(res.error || 'Reset failed');
-      await refreshStats();
-      setStatusMsg(
-        `Streamed fresh Ubuntu Core 24 image straight from server into RAM (${res.files} files).`
+        `Restored "${file.name}" (${(buffer.byteLength / (1024 * 1024)).toFixed(1)} MB) straight into volatile RAM.`
       );
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : String(err));
@@ -112,16 +83,16 @@ export const VirtualDiskManager: React.FC = () => {
       <div className="flex flex-wrap items-start justify-between gap-4 border-b border-[#d5dfe9] pb-4">
         <div>
           <h2 className="text-[16px] font-semibold text-[#0d2b4e]">
-            Virtual Disk Import & Export
+            Virtual Disk &amp; Live RAM State Manager
           </h2>
           <p className="mt-0.5 text-[12.5px] text-[#4b6076]">
-            Your filesystem runs strictly in volatile RAM. Export a snapshot before closing or
-            import an image directly into memory.
+            Ubuntu 24.04 LTS (Noble) runs strictly inside volatile browser RAM. Export a full machine &amp;
+            ramdisk snapshot before closing, or import one straight into memory.
           </p>
         </div>
         <button
           type="button"
-          onClick={refreshStats}
+          onClick={refreshTelemetry}
           className="aero-btn-secondary inline-flex items-center gap-1.5 rounded-[4px] px-3 py-1.5 text-[12px] font-medium whitespace-nowrap"
         >
           <RefreshCw className="h-3.5 w-3.5" />
@@ -129,28 +100,28 @@ export const VirtualDiskManager: React.FC = () => {
         </button>
       </div>
 
-      {/* Live RAM Filesystem Telemetry */}
+      {/* Live VM Memory Telemetry */}
       <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
         <div className="rounded border border-[#d4dee9] bg-white px-3.5 py-2.5">
-          <div className="text-[11px] font-medium text-[#5a6f85]">Files / Directories</div>
+          <div className="text-[11px] font-medium text-[#5a6f85]">Guest VM RAM</div>
           <div className="mt-1 font-mono text-[15px] font-semibold text-[#132940] tabular-nums">
-            {stats ? `${stats.files} / ${stats.dirs}` : '—'}
+            {telemetry ? `${telemetry.ramMb} MB` : '—'}
           </div>
         </div>
         <div className="rounded border border-[#d4dee9] bg-white px-3.5 py-2.5">
-          <div className="text-[11px] font-medium text-[#5a6f85]">VFS RAM Footprint</div>
+          <div className="text-[11px] font-medium text-[#5a6f85]">Active PTYs</div>
           <div className="mt-1 font-mono text-[15px] font-semibold text-[#132940] tabular-nums">
-            {stats ? `${(stats.vfs_bytes / 1024).toFixed(1)} KB` : '—'}
+            {telemetry ? `${telemetry.openPtys} shells` : '—'}
           </div>
         </div>
         <div className="rounded border border-[#d4dee9] bg-white px-3.5 py-2.5">
-          <div className="text-[11px] font-medium text-[#5a6f85]">RAM State CRC32</div>
+          <div className="text-[11px] font-medium text-[#5a6f85]">APT Data Proxied</div>
           <div className="mt-1 font-mono text-[15px] font-semibold text-[#1458a6] tabular-nums">
-            {stats ? `0x${stats.crc32}` : '—'}
+            {telemetry ? `${(telemetry.aptBytesProxied / 1024).toFixed(1)} KB` : '—'}
           </div>
         </div>
         <div className="rounded border border-[#d4dee9] bg-white px-3.5 py-2.5">
-          <div className="text-[11px] font-medium text-[#5a6f85]">Host Disk Writes</div>
+          <div className="text-[11px] font-medium text-[#5a6f85]">Browser Disk Writes</div>
           <div className="mt-1 font-mono text-[15px] font-semibold text-[#15803d] tabular-nums">
             0 bytes
           </div>
@@ -160,30 +131,23 @@ export const VirtualDiskManager: React.FC = () => {
       {/* Export Section */}
       <div className="mt-5">
         <h3 className="text-[13px] font-semibold text-[#132940]">
-          Export Live RAM Filesystem
+          Export Live Ubuntu RAM &amp; Ramdisk Snapshot
         </h3>
         <p className="mt-0.5 text-[12px] text-[#52677d]">
-          Serializes all files, directories, permissions, and installed snaps from Rust Wasm RAM.
+          Captures the entire Linux 6.1 LTS kernel memory, mutable ramfs files, installed{' '}
+          <span className="font-mono">apt</span> packages, and active CPU state into a{' '}
+          <span className="font-mono">.v86state</span> virtual disk image.
         </p>
 
         <div className="mt-3 flex flex-wrap gap-2.5">
           <button
             type="button"
             disabled={isWorking}
-            onClick={() => handleExport('ubuntudisk')}
+            onClick={handleExportSnapshot}
             className="aero-btn-primary inline-flex items-center gap-2 rounded-[4px] px-4 py-2 text-[12.5px] font-semibold whitespace-nowrap disabled:opacity-55"
           >
             <Download className="h-4 w-4" />
-            Export .ubuntudisk (CRC32 Binary)
-          </button>
-          <button
-            type="button"
-            disabled={isWorking}
-            onClick={() => handleExport('tar')}
-            className="aero-btn-secondary inline-flex items-center gap-2 rounded-[4px] px-4 py-2 text-[12.5px] font-medium whitespace-nowrap disabled:opacity-55"
-          >
-            <Download className="h-4 w-4" />
-            Export .tar (POSIX Archive)
+            Export .v86state Virtual RAM Image
           </button>
         </div>
       </div>
@@ -193,10 +157,12 @@ export const VirtualDiskManager: React.FC = () => {
       {/* Import Section */}
       <div>
         <h3 className="text-[13px] font-semibold text-[#132940]">
-          Import Virtual Disk into RAM
+          Import Virtual RAM Image into Memory
         </h3>
         <p className="mt-0.5 text-[12px] text-[#52677d]">
-          Replaces the active volatile ramfs across all open terminals immediately.
+          Restores a previously exported <span className="font-mono">.v86state</span> snapshot
+          directly into <span className="font-mono">v86.wasm</span> RAM with zero browser disk
+          persistence.
         </p>
 
         <div
@@ -219,8 +185,7 @@ export const VirtualDiskManager: React.FC = () => {
         >
           <Upload className="h-6 w-6 text-[#1d6dc2]" />
           <p className="mt-2 text-[12.5px] font-medium text-[#1b324b]">
-            Drop a <span className="font-mono">.ubuntudisk</span> or{' '}
-            <span className="font-mono">.tar</span> file here
+            Drop a <span className="font-mono">.v86state</span> snapshot file here
           </p>
           <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
             <button
@@ -229,21 +194,13 @@ export const VirtualDiskManager: React.FC = () => {
               onClick={() => fileInputRef.current?.click()}
               className="aero-btn-secondary rounded-[4px] px-3.5 py-1.5 text-[12px] font-medium whitespace-nowrap"
             >
-              Browse File...
-            </button>
-            <button
-              type="button"
-              disabled={isWorking}
-              onClick={handleResetToServer}
-              className="aero-btn-secondary rounded-[4px] px-3.5 py-1.5 text-[12px] font-medium whitespace-nowrap"
-            >
-              Reset to Fresh Server Image
+              Browse Snapshot...
             </button>
           </div>
           <input
             ref={fileInputRef}
             type="file"
-            accept=".ubuntudisk,.tar,.img"
+            accept=".v86state,.bin,.img"
             onChange={(e) => {
               const file = e.target.files?.[0];
               if (file) processImportedFile(file);

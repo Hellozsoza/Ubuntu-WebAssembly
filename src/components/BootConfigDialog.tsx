@@ -25,16 +25,17 @@ export const BootConfigDialog: React.FC<BootConfigDialogProps> = ({
   onCancel,
   canCancel = false,
 }) => {
-  const hostCores = typeof navigator !== 'undefined' && navigator.hardwareConcurrency
-    ? navigator.hardwareConcurrency
-    : 4;
+  const hostCores =
+    typeof navigator !== 'undefined' && navigator.hardwareConcurrency
+      ? navigator.hardwareConcurrency
+      : 4;
   const maxThreads = Math.max(hostCores, 16);
 
   const [cpuCores, setCpuCores] = useState<number>(initialCores);
   const [ramMb, setRamMb] = useState<number>(initialRamMb);
-  const [bootSource, setBootSource] = useState<'server' | 'disk'>('server');
-  const [customDiskName, setCustomDiskName] = useState<string | null>(null);
-  const [customDiskBytes, setCustomDiskBytes] = useState<ArrayBuffer | null>(null);
+  const [bootSource, setBootSource] = useState<'server' | 'snapshot'>('server');
+  const [customStateName, setCustomStateName] = useState<string | null>(null);
+  const [customStateBytes, setCustomStateBytes] = useState<ArrayBuffer | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const canSab = typeof SharedArrayBuffer !== 'undefined' && window.crossOriginIsolated;
@@ -47,9 +48,9 @@ export const BootConfigDialog: React.FC<BootConfigDialogProps> = ({
     const file = e.target.files?.[0];
     if (!file) return;
     const buf = await file.arrayBuffer();
-    setCustomDiskName(file.name);
-    setCustomDiskBytes(buf);
-    setBootSource('disk');
+    setCustomStateName(file.name);
+    setCustomStateBytes(buf);
+    setBootSource('snapshot');
   };
 
   const handleStart = (e: React.FormEvent) => {
@@ -57,8 +58,8 @@ export const BootConfigDialog: React.FC<BootConfigDialogProps> = ({
     onBoot({
       cpuCores,
       ramMb,
-      customDiskBytes: bootSource === 'disk' ? customDiskBytes : null,
-      customDiskName: bootSource === 'disk' ? customDiskName : null,
+      customStateBytes: bootSource === 'snapshot' ? customStateBytes : null,
+      customStateName: bootSource === 'snapshot' ? customStateName : null,
     });
   };
 
@@ -67,8 +68,8 @@ export const BootConfigDialog: React.FC<BootConfigDialogProps> = ({
       <div
         role="dialog"
         aria-modal="true"
-        aria-label="Ubuntu Core Hardware and Memory Configuration"
-        className="aero-window-active relative w-full max-w-[620px] overflow-hidden rounded-[8px]"
+        aria-label="Ubuntu Linux WebAssembly Hardware Configuration"
+        className="aero-window-active relative w-full max-w-[630px] overflow-hidden rounded-[8px]"
       >
         <div className="aero-sheen absolute inset-0" />
 
@@ -77,7 +78,7 @@ export const BootConfigDialog: React.FC<BootConfigDialogProps> = ({
           <div className="flex items-center gap-2">
             <Server className="h-4 w-4 text-[#0e2d4d]" />
             <span className="aero-title-shadow text-[13px] font-semibold text-[#0b1c2e]">
-              Ubuntu Core 24 WebAssembly — Boot Configuration
+              Ubuntu 24.04 LTS (Linux 6.1 LTS / v86.wasm) — Boot Configuration
             </span>
           </div>
           {canCancel && onCancel && !isBooting && (
@@ -100,16 +101,18 @@ export const BootConfigDialog: React.FC<BootConfigDialogProps> = ({
             {/* Vista Header Banner */}
             <div className="border-b border-[#d5dfe9] bg-gradient-to-r from-[#eef5fc] via-[#f8fbff] to-[#e6f1fb] px-6 py-4">
               <h1 className="text-[17px] font-semibold tracking-tight text-[#0d2b4e]">
-                Configure Volatile RAM & Multi-Threading
+                Configure Volatile RAM & Multi-Worker Threads
               </h1>
               <p className="mt-1 text-[12.5px] leading-relaxed text-[#42576e]">
-                Ubuntu Core 24 (compiled from Rust to WebAssembly) streams straight from the server
-                into RAM. Nothing is written to browser disk, localStorage, or IndexedDB.
+                Streams a real Linux 6.1 LTS i686 kernel + Ubuntu 24.04 LTS (Noble) rootfs directly
+                from the server into RAM inside <span className="font-mono">v86.wasm</span>{' '}
+                (Rust-written x86-to-Wasm emulator). Zero browser disk writes; full root &amp; real{' '}
+                <span className="font-mono">apt</span> support.
               </p>
             </div>
 
             <div className="space-y-5 px-6 py-5">
-              {/* CPU Cores / Worker Threads */}
+              {/* Worker Threads */}
               <div>
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <label
@@ -117,12 +120,12 @@ export const BootConfigDialog: React.FC<BootConfigDialogProps> = ({
                     className="flex items-center gap-2 text-[13px] font-semibold text-[#15283d]"
                   >
                     <Cpu className="h-4 w-4 text-[#1d6dc2]" />
-                    Worker Threads (SMP Cores)
+                    Web Worker Threads (VM + Rust Wasm SMP Pool)
                   </label>
                   <span className="font-mono text-[12.5px] font-semibold text-[#1458a6] tabular-nums">
                     {cpuCores} {cpuCores === 1 ? 'Thread' : 'Threads'}
                     <span className="ml-2 font-sans text-[11.5px] font-normal text-[#52677d]">
-                      (Host detected: {hostCores} logical cores)
+                      (Host: {hostCores} logical cores)
                     </span>
                   </span>
                 </div>
@@ -154,16 +157,19 @@ export const BootConfigDialog: React.FC<BootConfigDialogProps> = ({
                           : 'border border-[#c4d1de] bg-white text-[#23374d] hover:bg-[#eaf3fc]'
                       }`}
                     >
-                      {n} {n === 1 ? 'Core' : 'Cores'}
+                      {n} {n === 1 ? 'Thread' : 'Threads'}
                     </button>
                   ))}
                 </div>
 
                 <p className="mt-2 text-[11.5px] text-[#52677d]">
-                  Threading engine:{' '}
+                  Architecture: Dedicated <span className="font-mono">v86.wasm</span> x86 VM
+                  Worker (1 emulated x86 vCPU) + {cpuCores} parallel Rust{' '}
+                  <span className="font-mono">wasm32</span> SMP workers (
                   <span className="font-mono font-medium text-[#1b3652]">
-                    {canSab ? 'SharedArrayBuffer + Atomics' : 'Parallel Web Workers (Wasm Pool)'}
+                    {canSab ? 'SharedArrayBuffer + Atomics' : 'MessagePort Pool'}
                   </span>
+                  ).
                 </p>
               </div>
 
@@ -177,7 +183,7 @@ export const BootConfigDialog: React.FC<BootConfigDialogProps> = ({
                     className="flex items-center gap-2 text-[13px] font-semibold text-[#15283d]"
                   >
                     <MemoryStick className="h-4 w-4 text-[#1d6dc2]" />
-                    Volatile RAM Allocation
+                    Guest VM Volatile RAM Allocation
                   </label>
                   <span className="font-mono text-[12.5px] font-semibold text-[#1458a6] tabular-nums">
                     {ramMb} MB RAM
@@ -188,7 +194,7 @@ export const BootConfigDialog: React.FC<BootConfigDialogProps> = ({
                   <input
                     id="ram-mb-range"
                     type="range"
-                    min={64}
+                    min={128}
                     max={1536}
                     step={64}
                     disabled={isBooting}
@@ -223,7 +229,7 @@ export const BootConfigDialog: React.FC<BootConfigDialogProps> = ({
               <div>
                 <div className="flex items-center gap-2 text-[13px] font-semibold text-[#15283d]">
                   <HardDrive className="h-4 w-4 text-[#1d6dc2]" />
-                  Root Filesystem Source (Loaded into RAM)
+                  Boot Source (Loaded Strictly into RAM)
                 </div>
 
                 <div className="mt-2.5 grid grid-cols-1 gap-2 sm:grid-cols-2">
@@ -238,10 +244,10 @@ export const BootConfigDialog: React.FC<BootConfigDialogProps> = ({
                     }`}
                   >
                     <div className="text-[12.5px] font-semibold text-[#132940]">
-                      Server Stream (Fresh Ubuntu Core)
+                      Server Stream (Ubuntu 24.04 LTS Noble)
                     </div>
                     <div className="mt-0.5 text-[11.5px] text-[#52677d]">
-                      Fetch straight from server into RAM
+                      Cold boot Linux 6.1 LTS kernel + initrd in RAM
                     </div>
                   </button>
 
@@ -250,17 +256,17 @@ export const BootConfigDialog: React.FC<BootConfigDialogProps> = ({
                     disabled={isBooting}
                     onClick={() => fileInputRef.current?.click()}
                     className={`rounded border px-3 py-2.5 text-left transition-colors ${
-                      bootSource === 'disk' && customDiskBytes
+                      bootSource === 'snapshot' && customStateBytes
                         ? 'border-[#1d6dc2] bg-[#eaf3fc]'
                         : 'border-[#ccd6e2] bg-white hover:bg-[#f7fafd]'
                     }`}
                   >
                     <div className="flex items-center gap-1.5 text-[12.5px] font-semibold text-[#132940]">
                       <Upload className="h-3.5 w-3.5 text-[#1d6dc2]" />
-                      {customDiskName ? customDiskName : 'Import Virtual Disk'}
+                      {customStateName ? customStateName : 'Import VM RAM Snapshot'}
                     </div>
                     <div className="mt-0.5 text-[11.5px] text-[#52677d]">
-                      Mount .ubuntudisk or .tar in RAM
+                      Restore .v86state virtual disk/RAM image
                     </div>
                   </button>
                 </div>
@@ -268,7 +274,7 @@ export const BootConfigDialog: React.FC<BootConfigDialogProps> = ({
                 <input
                   ref={fileInputRef}
                   type="file"
-                  accept=".ubuntudisk,.tar,.img"
+                  accept=".v86state,.bin,.img"
                   onChange={handleFileSelected}
                   className="hidden"
                 />
@@ -300,14 +306,14 @@ export const BootConfigDialog: React.FC<BootConfigDialogProps> = ({
             {/* Footer Action Bar */}
             <div className="flex items-center justify-between border-t border-[#d5dfe9] bg-[#e9eff6] px-6 py-3">
               <span className="text-[11.5px] text-[#4c6178]">
-                Zero host disk writes · Ephemeral session
+                Zero host disk writes · Cold boot takes ~25–35s in x86 Wasm
               </span>
               <button
                 type="submit"
-                disabled={isBooting || (bootSource === 'disk' && !customDiskBytes)}
+                disabled={isBooting || (bootSource === 'snapshot' && !customStateBytes)}
                 className="aero-btn-primary rounded-[4px] px-5 py-1.5 text-[12.5px] font-semibold whitespace-nowrap disabled:opacity-55"
               >
-                {isBooting ? 'Booting into RAM...' : 'Boot Ubuntu Core'}
+                {isBooting ? 'Streaming into RAM...' : 'Boot Ubuntu Linux'}
               </button>
             </div>
           </form>
