@@ -1,11 +1,31 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import zlib from 'node:zlib';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.dirname(__dirname);
 const osDir = path.join(root, 'public', 'os');
 fs.mkdirSync(osDir, { recursive: true });
+
+function initrdHasRequiredFeatures(initrdPath) {
+  if (!fs.existsSync(initrdPath) || fs.statSync(initrdPath).size === 0) {
+    return false;
+  }
+  try {
+    const raw = zlib.gunzipSync(fs.readFileSync(initrdPath));
+    return (
+      raw.includes('usr/sbin/ldconfig\0') &&
+      raw.includes('usr/share/terminfo/x/xterm-256color\0') &&
+      raw.includes('usr/bin/apt-extracttemplates\0') &&
+      raw.includes('etc/inputrc\0') &&
+      raw.includes('INPUTRC')
+    );
+  } catch {
+    return false;
+  }
+}
 
 async function downloadIfMissing(destPath, urls) {
   if (fs.existsSync(destPath) && fs.statSync(destPath).size > 0) {
@@ -103,6 +123,15 @@ async function main() {
   await downloadIfMissing(path.join(osDir, 'vmlinuz'), [
     'https://deb.debian.org/debian/dists/bookworm/main/installer-i386/current/images/netboot/debian-installer/i386/linux',
   ]);
+
+  const initrdPath = path.join(osDir, 'ubuntu-24.04-initrd.cpio.gz');
+  if (!initrdHasRequiredFeatures(initrdPath)) {
+    const scriptPath = path.join(root, 'scripts', 'build_ubuntu_initrd.py');
+    if (fs.existsSync(scriptPath)) {
+      console.log('[ensure-os-assets] rebuilding ubuntu-24.04-initrd.cpio.gz with terminfo, inputrc, ldconfig & apt-utils...');
+      execFileSync('python3', [scriptPath], { stdio: 'inherit' });
+    }
+  }
 }
 
 await main();

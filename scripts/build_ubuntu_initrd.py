@@ -176,6 +176,8 @@ sub open_pty {
         open(STDERR, '>&', $slave);
         close($slave) if fileno($slave) > 2;
         $ENV{TERM} = 'xterm-256color';
+        $ENV{TERMINFO} = '/usr/share/terminfo';
+        $ENV{INPUTRC} = '/etc/inputrc';
         $ENV{HOME} = '/root';
         $ENV{USER} = 'root';
         $ENV{PATH} = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
@@ -595,7 +597,7 @@ def pack_dir_to_cpio_gz(root_dir, out_path):
     if rem:
         raw.write(b"\x00" * (512 - rem))
 
-    with gzip.open(out_path, "wb", compresslevel=3) as out:
+    with gzip.open(out_path, "wb", compresslevel=6) as out:
         out.write(raw.getvalue())
 
 
@@ -741,6 +743,10 @@ def main():
         with open(smp_path, "w") as f:
             f.write(SMP_RUN_PL)
         os.chmod(smp_path, 0o755)
+
+        terminfo_lib_link = os.path.join(root_dir, "usr/lib/terminfo")
+        if not os.path.lexists(terminfo_lib_link) and os.path.isdir(os.path.join(root_dir, "usr/share/terminfo")):
+            os.symlink("../share/terminfo", terminfo_lib_link)
 
         for req_rel in ("usr/sbin/ldconfig", "usr/share/terminfo/x/xterm-256color", "usr/bin/apt-extracttemplates", "etc/inputrc"):
             req_abs = os.path.join(root_dir, req_rel)

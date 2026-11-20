@@ -1,6 +1,8 @@
 import express from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
+import zlib from 'node:zlib';
+import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -29,8 +31,51 @@ function sendVolatileFile(res: express.Response, filePath: string, contentType: 
   res.sendFile(filePath);
 }
 
+let initrdReadyPromise: Promise<void> | null = null;
+
+function isInitrdUpToDate(initrdPath: string): boolean {
+  if (!fs.existsSync(initrdPath)) return false;
+  try {
+    const raw = zlib.gunzipSync(fs.readFileSync(initrdPath));
+    return (
+      raw.includes('usr/sbin/ldconfig\0') &&
+      raw.includes('usr/share/terminfo/x/xterm-256color\0') &&
+      raw.includes('usr/bin/apt-extracttemplates\0') &&
+      raw.includes('etc/inputrc\0') &&
+      raw.includes('INPUTRC')
+    );
+  } catch {
+    return false;
+  }
+}
+
+function ensureValidInitrd(): Promise<void> {
+  const initrdPath = path.join(__dirname, 'public', 'os', 'ubuntu-24.04-initrd.cpio.gz');
+  if (isInitrdUpToDate(initrdPath)) {
+    return Promise.resolve();
+  }
+  if (!initrdReadyPromise) {
+    initrdReadyPromise = new Promise<void>((resolve) => {
+      const scriptPath = path.join(__dirname, 'scripts', 'build_ubuntu_initrd.py');
+      if (!fs.existsSync(scriptPath)) {
+        resolve();
+        return;
+      }
+      execFile('python3', [scriptPath], { cwd: __dirname }, (err) => {
+        if (err) {
+          console.error('[server] failed to rebuild initrd:', err);
+        }
+        initrdReadyPromise = null;
+        resolve();
+      });
+    });
+  }
+  return initrdReadyPromise;
+}
+
 async function startServer() {
   const app = express();
+  void ensureValidInitrd();
 
   // Enable cross-origin isolation + volatile RAM no-store policy for OS binaries
   app.use((req, res, next) => {
@@ -66,7 +111,17 @@ async function startServer() {
   });
 
   // Official Ubuntu 24.04 LTS (Noble Numbat) i386 rootfs packed for volatile ramfs boot
-  app.get('/api/ubuntu-core/initrd', (_req, res) => {
+  app.get('/os/ubuntu-24.04-initrd.cpio.gz', async (_req, res) => {
+    await ensureValidInitrd();
+    sendVolatileFile(
+      res,
+      path.join(__dirname, 'public', 'os', 'ubuntu-24.04-initrd.cpio.gz'),
+      'application/gzip'
+    );
+  });
+
+  app.get('/api/ubuntu-core/initrd', async (_req, res) => {
+    await ensureValidInitrd();
     sendVolatileFile(
       res,
       path.join(__dirname, 'public', 'os', 'ubuntu-24.04-initrd.cpio.gz'),
