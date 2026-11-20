@@ -7,7 +7,6 @@ import { ubuntuRuntime } from '../runtime/ubuntuRuntime';
 
 interface UbuntuTerminalProps {
   terminalIndex: number;
-  threadSlot: number;
   totalThreads: number;
   ramMb: number;
   onSpawnTerminal: () => void;
@@ -15,7 +14,6 @@ interface UbuntuTerminalProps {
 
 export const UbuntuTerminal: React.FC<UbuntuTerminalProps> = ({
   terminalIndex,
-  threadSlot,
   totalThreads,
   ramMb,
   onSpawnTerminal,
@@ -98,7 +96,7 @@ export const UbuntuTerminal: React.FC<UbuntuTerminalProps> = ({
     const unsubMux = ubuntuRuntime.subscribeMuxReady(() => {
       setPtyStatus('ready');
       term.writeln(
-        `\x1b[32m[Ubuntu 24.04 LTS]\x1b[0m Kernel & /sbin/v86-mux ready. Attaching PTY for Terminal #${terminalIndex}...`
+        `\x1b[32m[Ubuntu 24.04 LTS]\x1b[0m Kernel ready. Terminal #${terminalIndex} attached (${totalThreads} shared SMP threads via \x1b[36msmp-run\x1b[0m).`
       );
       fitSafe();
     });
@@ -154,7 +152,7 @@ export const UbuntuTerminal: React.FC<UbuntuTerminalProps> = ({
               ? 'Booting Kernel...'
               : ptyStatus === 'exited'
                 ? 'Shell Exited'
-                : `/dev/pts/${Math.max(0, terminalIndex - 1)} · ${totalThreads}T Pool · Core #${threadSlot}`}
+                : `/dev/pts/${Math.max(0, terminalIndex - 1)} · All ${totalThreads} ${totalThreads === 1 ? 'Thread' : 'Threads'} Shared`}
           </span>
         </div>
 

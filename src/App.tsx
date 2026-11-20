@@ -22,7 +22,6 @@ interface DesktopWindow {
   kind: WindowKind;
   title: string;
   terminalIndex?: number;
-  threadSlot?: number;
   geometry: WindowGeometry;
   isMinimized: boolean;
   isMaximized: boolean;
@@ -63,32 +62,26 @@ export default function App() {
     return { x, y, width, height };
   };
 
-  const spawnTerminal = useCallback(
-    (threadsOverride?: number) => {
-      const idx = termCounter.current++;
-      const totalT = threadsOverride ?? hardware.cpuCores;
-      const threadSlot = (idx - 1) % Math.max(totalT, 1);
-      const offset = ((idx - 1) % 6) * 28;
-      const id = `term-${idx}-${Date.now()}`;
-      const z = ++zCounter.current;
+  const spawnTerminal = useCallback(() => {
+    const idx = termCounter.current++;
+    const offset = ((idx - 1) % 6) * 28;
+    const id = `term-${idx}-${Date.now()}`;
+    const z = ++zCounter.current;
 
-      const win: DesktopWindow = {
-        id,
-        kind: 'terminal',
-        title: `root@ubuntu-core — Terminal #${idx} (/dev/pts/${Math.max(0, idx - 1)})`,
-        terminalIndex: idx,
-        threadSlot,
-        geometry: computeCenteredGeometry(800, 490, offset - 30),
-        isMinimized: false,
-        isMaximized: false,
-        zIndex: z,
-      };
+    const win: DesktopWindow = {
+      id,
+      kind: 'terminal',
+      title: `root@ubuntu-core — Terminal #${idx} (/dev/pts/${Math.max(0, idx - 1)})`,
+      terminalIndex: idx,
+      geometry: computeCenteredGeometry(800, 490, offset - 30),
+      isMinimized: false,
+      isMaximized: false,
+      zIndex: z,
+    };
 
-      setWindows((prev) => [...prev, win]);
-      setActiveId(id);
-    },
-    [hardware.cpuCores]
-  );
+    setWindows((prev) => [...prev, win]);
+    setActiveId(id);
+  }, []);
 
   const openOrFocusSingleton = useCallback((kind: Exclude<WindowKind, 'terminal'>) => {
     setWindows((prev) => {
@@ -153,7 +146,7 @@ export default function App() {
       termCounter.current = 1;
       setIsBooted(true);
       setShowBootDialog(false);
-      spawnTerminal(cfg.cpuCores);
+      spawnTerminal();
     } catch (err) {
       setBootError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -386,7 +379,6 @@ export default function App() {
           {win.kind === 'terminal' && (
             <UbuntuTerminal
               terminalIndex={win.terminalIndex ?? 1}
-              threadSlot={win.threadSlot ?? 0}
               totalThreads={hardware.cpuCores}
               ramMb={hardware.ramMb}
               onSpawnTerminal={() => spawnTerminal()}

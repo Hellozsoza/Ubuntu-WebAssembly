@@ -118,7 +118,7 @@ export const SmpResourceMonitor: React.FC = () => {
       {/* Per-Core Rust Wasm SMP Worker Threads */}
       <div className="mt-4">
         <h3 className="text-[13px] font-semibold text-[#132940]">
-          Parallel Rust wasm32 Worker Threads ({cores.length} Cores)
+          Shared Rust wasm32 Worker Pool ({cores.length} Threads Accessible Per Console)
         </h3>
         <div className="mt-2.5 grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
           {cores.map((core) => (

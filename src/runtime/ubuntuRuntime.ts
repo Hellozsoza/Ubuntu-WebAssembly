@@ -47,6 +47,64 @@ type PtyListener = {
   onError: (err: string) => void;
 };
 
+const hasWasmMagic = (b: Uint8Array) =>
+  b.length >= 4 && b[0] === 0x00 && b[1] === 0x61 && b[2] === 0x73 && b[3] === 0x6d;
+
+async function fetchBinaryWithFallback(
+  urls: string[],
+  label: string,
+  looksValid?: (bytes: Uint8Array, contentType: string) => boolean
+): Promise<ArrayBuffer> {
+  const errors: string[] = [];
+  for (const url of urls) {
+    try {
+      const resp = await fetch(url, { cache: 'no-store' });
+      if (!resp.ok) {
+        errors.push(`${url} -> HTTP ${resp.status}`);
+        continue;
+      }
+      const ctype = (resp.headers.get('content-type') || '').toLowerCase();
+      // Always consume Response body exactly once to avoid "body stream already read"
+      const buf = await resp.arrayBuffer();
+      const bytes = new Uint8Array(buf);
+      if (bytes.length === 0) {
+        errors.push(`${url} -> empty payload`);
+        continue;
+      }
+      if (
+        ctype.includes('text/html') ||
+        (bytes[0] === 0x3c && (bytes[1] === 0x21 || bytes[1] === 0x68 || bytes[1] === 0x48))
+      ) {
+        errors.push(`${url} -> HTML fallback instead of binary`);
+        continue;
+      }
+      if (looksValid && !looksValid(bytes, ctype)) {
+        errors.push(`${url} -> unexpected binary signature`);
+        continue;
+      }
+      return buf;
+    } catch (err) {
+      errors.push(`${url} -> ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  throw new Error(`Failed to load ${label} (${errors.join('; ')})`);
+}
+
+async function unpackInitrdIfGzipped(rawBuf: ArrayBuffer): Promise<ArrayBuffer> {
+  const bytes = new Uint8Array(rawBuf);
+  const isGzip = bytes.length >= 2 && bytes[0] === 0x1f && bytes[1] === 0x8b;
+  if (!isGzip || typeof DecompressionStream === 'undefined') {
+    return rawBuf;
+  }
+  try {
+    const stream = new Blob([rawBuf]).stream().pipeThrough(new DecompressionStream('gzip'));
+    const out = await new Response(stream).arrayBuffer();
+    return out.byteLength > 0 ? out : rawBuf;
+  } catch {
+    return rawBuf;
+  }
+}
+
 export class UbuntuWasmRuntime {
   private vmWorker: Worker | null = null;
   private smpWorkers: Worker[] = [];
@@ -186,21 +244,34 @@ export class UbuntuWasmRuntime {
     this.config = cfg;
     this.bootTimestamp = Date.now();
 
-    onProgress?.({ stage: 'Streaming SeaBIOS & VGA firmware into RAM...', percent: 12 });
-    const [biosResp, vgaBiosResp, smpWasmResp] = await Promise.all([
-      fetch('/api/ubuntu-core/seabios.bin', { cache: 'no-store' }),
-      fetch('/api/ubuntu-core/vgabios.bin', { cache: 'no-store' }),
-      fetch('/ubuntu_core.wasm', { cache: 'no-store' }),
-    ]);
-
-    if (!biosResp.ok) throw new Error(`Failed to load seabios.bin (${biosResp.status})`);
-    if (!vgaBiosResp.ok) throw new Error(`Failed to load vgabios.bin (${vgaBiosResp.status})`);
-    if (!smpWasmResp.ok) throw new Error(`Failed to load ubuntu_core.wasm (${smpWasmResp.status})`);
-
-    const [biosBuf, vgaBiosBuf, smpWasmBytes] = await Promise.all([
-      biosResp.arrayBuffer(),
-      vgaBiosResp.arrayBuffer(),
-      smpWasmResp.arrayBuffer(),
+    onProgress?.({ stage: 'Streaming SeaBIOS, VGA BIOS & Rust v86.wasm into RAM...', percent: 12 });
+    const [biosBuf, vgaBiosBuf, v86WasmBuf, smpWasmBytes] = await Promise.all([
+      fetchBinaryWithFallback(
+        [
+          '/os/seabios.bin',
+          '/api/ubuntu-core/seabios.bin',
+          'https://cdn.jsdelivr.net/gh/copy/v86@master/bios/seabios.bin',
+        ],
+        'seabios.bin'
+      ),
+      fetchBinaryWithFallback(
+        [
+          '/os/vgabios.bin',
+          '/api/ubuntu-core/vgabios.bin',
+          'https://cdn.jsdelivr.net/gh/copy/v86@master/bios/vgabios.bin',
+        ],
+        'vgabios.bin'
+      ),
+      fetchBinaryWithFallback(
+        [
+          '/os/v86.wasm',
+          '/api/ubuntu-core/v86.wasm',
+          'https://cdn.jsdelivr.net/npm/v86@0.5.473/build/v86.wasm',
+        ],
+        'v86.wasm',
+        hasWasmMagic
+      ),
+      fetchBinaryWithFallback(['/ubuntu_core.wasm'], 'ubuntu_core.wasm', hasWasmMagic),
     ]);
 
     let bzimageBuf: ArrayBuffer | null = null;
@@ -215,19 +286,18 @@ export class UbuntuWasmRuntime {
       stateBuf = cfg.customStateBytes.slice(0);
     } else {
       onProgress?.({
-        stage: 'Streaming Linux kernel (6.1 LTS i686) & Ubuntu 24.04 LTS rootfs into RAM...',
+        stage: 'Streaming & decompressing Ubuntu 24.04 LTS rootfs natively in RAM...',
         percent: 38,
       });
-      const [bzResp, initrdResp] = await Promise.all([
-        fetch('/api/ubuntu-core/vmlinuz', { cache: 'no-store' }),
-        fetch('/api/ubuntu-core/initrd', { cache: 'no-store' }),
+      const [rawBz, rawInitrd] = await Promise.all([
+        fetchBinaryWithFallback(['/os/vmlinuz', '/api/ubuntu-core/vmlinuz'], 'vmlinuz'),
+        fetchBinaryWithFallback(
+          ['/os/ubuntu-24.04-initrd.cpio.gz', '/api/ubuntu-core/initrd'],
+          'Ubuntu 24.04 initrd'
+        ),
       ]);
-      if (!bzResp.ok) throw new Error(`Failed to stream vmlinuz (${bzResp.status})`);
-      if (!initrdResp.ok) throw new Error(`Failed to stream Ubuntu initrd (${initrdResp.status})`);
-      [bzimageBuf, initrdBuf] = await Promise.all([
-        bzResp.arrayBuffer(),
-        initrdResp.arrayBuffer(),
-      ]);
+      bzimageBuf = rawBz;
+      initrdBuf = await unpackInitrdIfGzipped(rawInitrd);
     }
 
     onProgress?.({
@@ -288,6 +358,11 @@ export class UbuntuWasmRuntime {
         return;
       }
 
+      if (msg.type === 'smp_req') {
+        void this.handleVmSmpRequest(msg.reqId, msg.command);
+        return;
+      }
+
       if (msg.reqId) {
         const resolver = this.pending.get(msg.reqId);
         if (!resolver) return;
@@ -300,7 +375,7 @@ export class UbuntuWasmRuntime {
       }
     };
 
-    const transfers: Transferable[] = [biosBuf, vgaBiosBuf];
+    const transfers: Transferable[] = [biosBuf, vgaBiosBuf, v86WasmBuf];
     if (bzimageBuf) transfers.push(bzimageBuf);
     if (initrdBuf) transfers.push(initrdBuf);
     if (stateBuf) transfers.push(stateBuf);
@@ -311,6 +386,7 @@ export class UbuntuWasmRuntime {
         ramMb: cfg.ramMb,
         biosBuf,
         vgaBiosBuf,
+        v86WasmBuf,
         bzimageBuf,
         initrdBuf,
         stateBuf,
@@ -453,6 +529,33 @@ export class UbuntuWasmRuntime {
     const copy = stateBuf.slice(0);
     await this.sendVmRequest({ type: 'restore_state', stateBuf: copy }, [copy]);
     this.notifyListeners();
+  }
+
+  private async handleVmSmpRequest(reqId: string, command: string) {
+    try {
+      const parts = command.trim().split(/\s+/);
+      const mode = (parts[0] || 'primes').toLowerCase();
+      const rawArg = Number(parts[1] || (mode === 'primes' ? 1_000_000 : 2_000_000));
+      const arg = Number.isFinite(rawArg) && rawArg > 0 ? Math.floor(rawArg) : 1_000_000;
+
+      const report =
+        mode === 'stress' || mode === 'hash'
+          ? await this.runParallelStress(this.config.cpuCores, arg)
+          : await this.runParallelPrimes(arg);
+
+      const lines = [
+        `[Rust Wasm SMP Pool] ${report.workload}`,
+        `Threads Dispatched: ${report.threadsUsed} / ${this.config.cpuCores} allocated (${this.threadingMode})`,
+        `Wall Time: ${report.totalWallMs.toFixed(2)} ms | Result: ${report.aggregateResult}`,
+        ...report.perCore.map(
+          (c) => `  - Thread #${c.coreId}: ${c.elapsedMs.toFixed(2)} ms (${c.result})`
+        ),
+      ];
+      this.vmWorker?.postMessage({ type: 'smp_res', reqId, result: lines.join('\n') + '\n' });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.vmWorker?.postMessage({ type: 'smp_res', reqId, result: `SMP error: ${msg}\n` });
+    }
   }
 
   public async runParallelPrimes(maxN: number): Promise<SmpBenchmarkReport> {

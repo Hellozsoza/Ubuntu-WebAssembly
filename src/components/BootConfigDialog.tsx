@@ -163,13 +163,13 @@ export const BootConfigDialog: React.FC<BootConfigDialogProps> = ({
                 </div>
 
                 <p className="mt-2 text-[11.5px] text-[#52677d]">
-                  Architecture: Dedicated <span className="font-mono">v86.wasm</span> x86 VM
-                  Worker (1 emulated x86 vCPU) + {cpuCores} parallel Rust{' '}
-                  <span className="font-mono">wasm32</span> SMP workers (
+                  Shared Pool: Every console accesses all {cpuCores} parallel Rust{' '}
+                  <span className="font-mono">wasm32</span> SMP workers simultaneously (via{' '}
+                  <span className="font-mono">smp-run</span> &amp;{' '}
                   <span className="font-mono font-medium text-[#1b3652]">
                     {canSab ? 'SharedArrayBuffer + Atomics' : 'MessagePort Pool'}
                   </span>
-                  ).
+                  ) alongside the <span className="font-mono">v86.wasm</span> Linux VM Worker.
                 </p>
               </div>
 
@@ -306,7 +306,7 @@ export const BootConfigDialog: React.FC<BootConfigDialogProps> = ({
             {/* Footer Action Bar */}
             <div className="flex items-center justify-between border-t border-[#d5dfe9] bg-[#e9eff6] px-6 py-3">
               <span className="text-[11.5px] text-[#4c6178]">
-                Zero host disk writes · Cold boot takes ~25–35s in x86 Wasm
+                Zero host disk writes · Native-decompressed RAM initrd (~10–15s boot)
               </span>
               <button
                 type="submit"

@@ -32,38 +32,44 @@ function sendVolatileFile(res: express.Response, filePath: string, contentType: 
 async function startServer() {
   const app = express();
 
-  // Enable cross-origin isolation where supported for SharedArrayBuffer multi-threading
-  app.use((_req, res, next) => {
+  // Enable cross-origin isolation + volatile RAM no-store policy for OS binaries
+  app.use((req, res, next) => {
     res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
     res.setHeader('Cross-Origin-Embedder-Policy', 'credentialless');
     res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+    if (req.path.startsWith('/os/') || req.path.endsWith('.wasm')) {
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
+    }
     next();
   });
 
   // Real x86-to-Wasm CPU & PC emulator compiled from Rust (copy/v86)
   app.get('/api/ubuntu-core/v86.wasm', (_req, res) => {
-    const wasmPath = path.join(__dirname, 'node_modules', 'v86', 'build', 'v86.wasm');
-    sendVolatileFile(res, wasmPath, 'application/wasm');
+    const publicWasm = path.join(__dirname, 'public', 'os', 'v86.wasm');
+    const nmWasm = path.join(__dirname, 'node_modules', 'v86', 'build', 'v86.wasm');
+    sendVolatileFile(res, fs.existsSync(publicWasm) ? publicWasm : nmWasm, 'application/wasm');
   });
 
   app.get('/api/ubuntu-core/seabios.bin', (_req, res) => {
-    sendVolatileFile(res, path.join(__dirname, 'os-images', 'seabios.bin'), 'application/octet-stream');
+    sendVolatileFile(res, path.join(__dirname, 'public', 'os', 'seabios.bin'), 'application/octet-stream');
   });
 
   app.get('/api/ubuntu-core/vgabios.bin', (_req, res) => {
-    sendVolatileFile(res, path.join(__dirname, 'os-images', 'vgabios.bin'), 'application/octet-stream');
+    sendVolatileFile(res, path.join(__dirname, 'public', 'os', 'vgabios.bin'), 'application/octet-stream');
   });
 
   // Linux 6.1 LTS i386 kernel
   app.get('/api/ubuntu-core/vmlinuz', (_req, res) => {
-    sendVolatileFile(res, path.join(__dirname, 'os-images', 'vmlinuz'), 'application/octet-stream');
+    sendVolatileFile(res, path.join(__dirname, 'public', 'os', 'vmlinuz'), 'application/octet-stream');
   });
 
   // Official Ubuntu 24.04 LTS (Noble Numbat) i386 rootfs packed for volatile ramfs boot
   app.get('/api/ubuntu-core/initrd', (_req, res) => {
     sendVolatileFile(
       res,
-      path.join(__dirname, 'os-images', 'ubuntu-24.04-initrd.cpio.gz'),
+      path.join(__dirname, 'public', 'os', 'ubuntu-24.04-initrd.cpio.gz'),
       'application/gzip'
     );
   });

@@ -2,7 +2,7 @@
 """
 Builds os-images/vmlinuz (Linux 6.1 LTS i386) and
 os-images/ubuntu-24.04-initrd.cpio.gz from Canonical's official Ubuntu 24.04 LTS
-(Noble Numbat) binary-i386 archive + /sbin/v86-mux + APT HTTP proxy config.
+(Noble Numbat) binary-i386 archive + /sbin/v86-mux + /usr/local/bin/smp-run + APT HTTP proxy config.
 """
 import concurrent.futures
 import gzip
@@ -49,6 +49,7 @@ SEEDS = [
     "gpgv",
     "openssl",
     "mount",
+    "libc-bin",
 ]
 
 V86_MUX = r"""#!/usr/bin/perl
@@ -110,14 +111,27 @@ my $proxy_srv = IO::Socket::INET->new(
 );
 $proxy_srv->blocking(0) if $proxy_srv;
 
+my $smp_srv = IO::Socket::INET->new(
+    LocalAddr => '127.0.0.1',
+    LocalPort => 3129,
+    Proto     => 'tcp',
+    Listen    => 8,
+    ReuseAddr => 1,
+);
+$smp_srv->blocking(0) if $smp_srv;
+
 my $sel = IO::Select->new($tty_in);
 $sel->add($proxy_srv) if $proxy_srv;
+$sel->add($smp_srv) if $smp_srv;
 
 my %ptys;
 my %fd_to_term;
 my %http_reqs;
 my %fd_to_http;
+my %smp_reqs;
+my %fd_to_smp;
 my $http_seq = 1;
+my $smp_seq = 1;
 my $tty_buf = '';
 
 sub open_pty {
@@ -150,6 +164,7 @@ sub open_pty {
         close($tty_in);
         close($tty_out);
         close($proxy_srv) if $proxy_srv;
+        close($smp_srv) if $smp_srv;
         setsid();
         open(my $slave, '+<', $slave_path) or POSIX::_exit(1);
         my $sctty = 0;
@@ -231,6 +246,13 @@ sub handle_frame {
         delete $fd_to_http{fileno($sock)};
         $sel->remove($sock);
         close($sock);
+    } elsif ($type eq 'SMP_RES') {
+        my $s = delete $smp_reqs{$id} or return;
+        my $sock = $s->{sock};
+        delete $fd_to_smp{fileno($sock)};
+        $sel->remove($sock);
+        syswrite($sock, $data);
+        close($sock);
     }
 }
 
@@ -250,7 +272,7 @@ while (1) {
     for my $fh (@ready) {
         if ($fh == $tty_in) {
             my $chunk = '';
-            my $n = sysread($tty_in, $chunk, 4096);
+            my $n = sysread($tty_in, $chunk, 65536);
             next if !defined($n) || $n == 0;
             $tty_buf .= $chunk;
             while ($tty_buf =~ s/^(.*?)\x07\r?\n?//s) {
@@ -268,10 +290,19 @@ while (1) {
                 $fd_to_http{fileno($client)} = $rid;
                 $sel->add($client);
             }
+        } elsif ($smp_srv && $fh == $smp_srv) {
+            my $client = $smp_srv->accept();
+            if ($client) {
+                $client->blocking(0);
+                my $sid = 's' . ($smp_seq++);
+                $smp_reqs{$sid} = { sock => $client, buf => '', sent => 0 };
+                $fd_to_smp{fileno($client)} = $sid;
+                $sel->add($client);
+            }
         } elsif (exists $fd_to_term{fileno($fh)}) {
             my $tid = $fd_to_term{fileno($fh)};
             my $out = '';
-            my $n = sysread($fh, $out, 2048);
+            my $n = sysread($fh, $out, 16384);
             if (!defined $n || $n == 0) {
                 send_frame('EXIT', $tid, '0');
                 close_pty($tid);
@@ -282,7 +313,7 @@ while (1) {
             my $rid = $fd_to_http{fileno($fh)};
             my $h = $http_reqs{$rid};
             my $chunk = '';
-            my $n = sysread($fh, $chunk, 4096);
+            my $n = sysread($fh, $chunk, 16384);
             if (!defined $n || $n == 0) {
                 delete $http_reqs{$rid};
                 delete $fd_to_http{fileno($fh)};
@@ -295,9 +326,48 @@ while (1) {
                     send_frame('HTTP_REQ', $rid, $h->{buf});
                 }
             }
+        } elsif (exists $fd_to_smp{fileno($fh)}) {
+            my $sid = $fd_to_smp{fileno($fh)};
+            my $s = $smp_reqs{$sid};
+            my $chunk = '';
+            my $n = sysread($fh, $chunk, 1024);
+            if (!defined $n || $n == 0) {
+                delete $smp_reqs{$sid};
+                delete $fd_to_smp{fileno($fh)};
+                $sel->remove($fh);
+                close($fh);
+            } else {
+                $s->{buf} .= $chunk;
+                if (!$s->{sent} && $s->{buf} =~ /\n/) {
+                    $s->{sent} = 1;
+                    send_frame('SMP_REQ', $sid, $s->{buf});
+                }
+            }
         }
     }
 }
+"""
+
+SMP_RUN_PL = r"""#!/usr/bin/perl
+use strict;
+use warnings;
+use IO::Socket::INET;
+
+my $mode = $ARGV[0] || 'primes';
+my $arg  = $ARGV[1] || ($mode eq 'primes' ? 1000000 : 2000000);
+
+my $sock = IO::Socket::INET->new(
+    PeerAddr => '127.0.0.1',
+    PeerPort => 3129,
+    Proto    => 'tcp',
+    Timeout  => 5,
+) or die "Cannot connect to v86-mux SMP pool (127.0.0.1:3129): $!\n";
+
+print $sock "$mode $arg\n";
+while (my $line = <$sock>) {
+    print $line;
+}
+close($sock);
 """
 
 INIT_SH = """#!/bin/sh
@@ -322,9 +392,12 @@ Acquire::Retries "2";
 APT::Sandbox::User "root";
 """
 
-SOURCES_LIST = """deb http://archive.ubuntu.com/ubuntu noble main universe
-deb http://archive.ubuntu.com/ubuntu noble-updates main universe
-deb http://security.ubuntu.com/ubuntu noble-security main universe
+SOURCES_LIST = """deb http://archive.ubuntu.com/ubuntu noble main
+deb http://archive.ubuntu.com/ubuntu noble-updates main
+deb http://security.ubuntu.com/ubuntu noble-security main
+# Uncomment below for full universe repository (~8.5 MB index):
+# deb http://archive.ubuntu.com/ubuntu noble universe
+# deb http://archive.ubuntu.com/ubuntu noble-updates universe
 """
 
 PASSWD_FILE = """root:x:0:0:root:/root:/bin/bash
@@ -502,28 +575,54 @@ def pack_dir_to_cpio_gz(root_dir, out_path):
     if rem:
         raw.write(b"\x00" * (512 - rem))
 
-    with gzip.open(out_path, "wb", compresslevel=1) as out:
+    with gzip.open(out_path, "wb", compresslevel=3) as out:
         out.write(raw.getvalue())
 
 
 def main():
-    out_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "os-images")
+    root_project = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    out_dir = os.path.join(root_project, "public", "os")
     os.makedirs(out_dir, exist_ok=True)
     for name, url in [("seabios.bin", SEABIOS_URL), ("vgabios.bin", VGABIOS_URL), ("vmlinuz", VMLINUZ_URL)]:
         dst = os.path.join(out_dir, name)
-        if name == "vmlinuz" or not os.path.exists(dst):
-            print("Fetching", name)
-            urllib.request.urlretrieve(url, dst)
+        if not os.path.exists(dst):
+            print("Fetching", name, flush=True)
+            with urllib.request.urlopen(url, timeout=20) as r, open(dst, "wb") as fp:
+                fp.write(r.read())
+
+    v86_src = os.path.join(root_project, "node_modules", "v86", "build", "v86.wasm")
+    v86_dst = os.path.join(out_dir, "v86.wasm")
+    if os.path.exists(v86_src):
+        shutil.copy2(v86_src, v86_dst)
 
     pkgs = parse_packages()
     selected = resolve_closure(pkgs)
-    print(f"Resolved {len(selected)} Ubuntu 24.04 Noble i386 packages")
+    print(f"Resolved {len(selected)} Ubuntu 24.04 Noble i386 packages", flush=True)
 
     with tempfile.TemporaryDirectory() as work:
         deb_dir = os.path.join(work, "debs")
         root_dir = os.path.join(work, "rootfs")
         os.makedirs(deb_dir, exist_ok=True)
-        for sub in ("usr/bin", "usr/sbin", "usr/lib/i386-linux-gnu", "etc/apt/apt.conf.d", "etc/ld.so.conf.d", "etc/ssl/certs", "var/lib/dpkg/info", "var/lib/dpkg/updates", "var/lib/dpkg/triggers", "var/lib/apt/lists/partial", "var/cache/apt/archives/partial", "root", "tmp", "proc", "sys", "dev", "run"):
+        for sub in (
+            "usr/bin",
+            "usr/sbin",
+            "usr/local/bin",
+            "usr/lib/i386-linux-gnu",
+            "etc/apt/apt.conf.d",
+            "etc/ld.so.conf.d",
+            "etc/ssl/certs",
+            "var/lib/dpkg/info",
+            "var/lib/dpkg/updates",
+            "var/lib/dpkg/triggers",
+            "var/lib/apt/lists/partial",
+            "var/cache/apt/archives/partial",
+            "root",
+            "tmp",
+            "proc",
+            "sys",
+            "dev",
+            "run",
+        ):
             os.makedirs(os.path.join(root_dir, sub), exist_ok=True)
         for link_name, target in (("bin", "usr/bin"), ("sbin", "usr/sbin"), ("lib", "usr/lib")):
             os.symlink(target, os.path.join(root_dir, link_name))
@@ -531,11 +630,22 @@ def main():
         def dl(item):
             name, d = item
             fn = os.path.join(deb_dir, f"{name}.deb")
-            urllib.request.urlretrieve(f"{ARCHIVE_BASE}/{d['Filename']}", fn)
-            return name, fn
+            url = f"{ARCHIVE_BASE}/{d['Filename']}"
+            last_err = None
+            for attempt in range(4):
+                try:
+                    req = urllib.request.Request(url, headers={"User-Agent": "Debian APT-HTTP/1.3"})
+                    with urllib.request.urlopen(req, timeout=20) as r, open(fn, "wb") as fp:
+                        fp.write(r.read())
+                    return name, fn
+                except Exception as exc:
+                    last_err = exc
+                    import time
+                    time.sleep(0.3 * (attempt + 1))
+            raise RuntimeError(f"Failed to download {url}: {last_err}")
 
-        print("Downloading .deb packages...")
-        with concurrent.futures.ThreadPoolExecutor(max_workers=12) as pool:
+        print("Downloading .deb packages...", flush=True)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
             debs = list(pool.map(dl, selected.items()))
 
         print("Extracting packages...")
@@ -604,6 +714,11 @@ def main():
         with open(mux_path, "w") as f:
             f.write(V86_MUX)
         os.chmod(mux_path, 0o755)
+
+        smp_path = os.path.join(root_dir, "usr/local/bin/smp-run")
+        with open(smp_path, "w") as f:
+            f.write(SMP_RUN_PL)
+        os.chmod(smp_path, 0o755)
 
         out_path = os.path.join(out_dir, "ubuntu-24.04-initrd.cpio.gz")
         print("Packing initramfs...")

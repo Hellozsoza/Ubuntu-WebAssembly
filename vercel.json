@@ -1,0 +1,42 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
+  "framework": "vite",
+  "functions": {
+    "api/ubuntu-core/source.ts": {
+      "includeFiles": "rust-kernel/**"
+    }
+  },
+  "rewrites": [
+    { "source": "/api/ubuntu-core/v86.wasm", "destination": "/os/v86.wasm" },
+    { "source": "/api/ubuntu-core/seabios.bin", "destination": "/os/seabios.bin" },
+    { "source": "/api/ubuntu-core/vgabios.bin", "destination": "/os/vgabios.bin" },
+    { "source": "/api/ubuntu-core/vmlinuz", "destination": "/os/vmlinuz" },
+    { "source": "/api/ubuntu-core/initrd", "destination": "/os/ubuntu-24.04-initrd.cpio.gz" },
+    { "source": "/((?!api/|os/|assets/|ubuntu_core\\.wasm|favicon\\.).*)", "destination": "/index.html" }
+  ],
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        { "key": "Cross-Origin-Opener-Policy", "value": "same-origin" },
+        { "key": "Cross-Origin-Embedder-Policy", "value": "credentialless" },
+        { "key": "Cross-Origin-Resource-Policy", "value": "same-origin" }
+      ]
+    },
+    {
+      "source": "/os/(.*)",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-store, no-cache, must-revalidate, private" }
+      ]
+    },
+    {
+      "source": "/ubuntu_core.wasm",
+      "headers": [
+        { "key": "Content-Type", "value": "application/wasm" },
+        { "key": "Cache-Control", "value": "no-store, no-cache, must-revalidate, private" }
+      ]
+    }
+  ]
+}

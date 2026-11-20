@@ -6,6 +6,7 @@ interface BootPayload {
   ramMb: number;
   biosBuf: ArrayBuffer;
   vgaBiosBuf: ArrayBuffer;
+  v86WasmBuf: ArrayBuffer;
   bzimageBuf: ArrayBuffer | null;
   initrdBuf: ArrayBuffer | null;
   stateBuf: ArrayBuffer | null;
@@ -52,6 +53,12 @@ interface GetTelemetryPayload {
   reqId: string;
 }
 
+interface SmpResPayload {
+  type: 'smp_res';
+  reqId: string;
+  result: string;
+}
+
 type VmWorkerMsg =
   | BootPayload
   | OpenPtyPayload
@@ -60,7 +67,8 @@ type VmWorkerMsg =
   | ClosePtyPayload
   | SaveStatePayload
   | RestoreStatePayload
-  | GetTelemetryPayload;
+  | GetTelemetryPayload
+  | SmpResPayload;
 
 let emulator: V86 | null = null;
 let muxReady = false;
@@ -183,7 +191,7 @@ async function handleHttpProxy(rid: string, rawReq: string) {
 }
 
 async function sendHttpChunked(rid: string, full: Uint8Array) {
-  const CHUNK_SIZE = 1024;
+  const CHUNK_SIZE = 16384;
   for (let i = 0; i < full.length; i += CHUNK_SIZE) {
     const slice = full.subarray(i, Math.min(full.length, i + CHUNK_SIZE));
     await new Promise<void>((resolve) => {
@@ -252,6 +260,8 @@ function attachSerialListener(vm: V86) {
           ackWaiters.delete(id);
           fn();
         }
+      } else if (ftype === 'SMP_REQ') {
+        self.postMessage({ type: 'smp_req', reqId: id, command: dec.decode(payload) });
       } else if (ftype === 'ERR') {
         self.postMessage({ type: 'pty_error', termId: id, error: dec.decode(payload) });
       }
@@ -274,8 +284,12 @@ self.onmessage = async (ev: MessageEvent<VmWorkerMsg>) => {
       aptBytesProxied = 0;
       ackWaiters.clear();
 
+      const v86WasmBuf = msg.v86WasmBuf;
       const options: ConstructorParameters<typeof V86>[0] = {
-        wasm_path: '/api/ubuntu-core/v86.wasm',
+        wasm_fn: async (imports) => {
+          const { instance } = await WebAssembly.instantiate(v86WasmBuf, imports);
+          return instance.exports;
+        },
         memory_size: msg.ramMb * 1024 * 1024,
         vga_memory_size: 4 * 1024 * 1024,
         bios: { buffer: msg.biosBuf },
@@ -283,6 +297,7 @@ self.onmessage = async (ev: MessageEvent<VmWorkerMsg>) => {
         disable_keyboard: true,
         disable_mouse: true,
         disable_speaker: true,
+        fastboot: true,
         autostart: true,
       };
 
@@ -292,7 +307,8 @@ self.onmessage = async (ev: MessageEvent<VmWorkerMsg>) => {
       } else if (msg.bzimageBuf && msg.initrdBuf) {
         options.bzimage = { buffer: msg.bzimageBuf };
         options.initrd = { buffer: msg.initrdBuf };
-        options.cmdline = 'console=ttyS0 root=/dev/ram0 rw rdinit=/init';
+        options.cmdline =
+          'console=ttyS0 root=/dev/ram0 rw rdinit=/init quiet loglevel=1 mitigations=off apparmor=0 selinux=0 pnpbios=off acpi=off';
       }
 
       const vm = new V86(options);
@@ -331,6 +347,11 @@ self.onmessage = async (ev: MessageEvent<VmWorkerMsg>) => {
 
     if (msg.type === 'close_pty') {
       sendFrame('CLOSE', msg.termId);
+      return;
+    }
+
+    if (msg.type === 'smp_res') {
+      sendFrame('SMP_RES', msg.reqId, msg.result);
       return;
     }
 
