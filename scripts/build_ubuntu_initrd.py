@@ -50,6 +50,8 @@ SEEDS = [
     "openssl",
     "mount",
     "libc-bin",
+    "ncurses-base",
+    "apt-utils",
 ]
 
 V86_MUX = r"""#!/usr/bin/perl
@@ -427,6 +429,24 @@ users:x:100:
 nogroup:x:65534:
 """
 
+INPUTRC_FILE = r"""set input-meta on
+set output-meta on
+set convert-meta off
+set bell-style none
+"\e[3~": delete-char
+"\e[1~": beginning-of-line
+"\e[4~": end-of-line
+"\e[H": beginning-of-line
+"\e[F": end-of-line
+"\eOH": beginning-of-line
+"\eOF": end-of-line
+"\e[3;5~": kill-word
+"\e[1;5C": forward-word
+"\e[1;5D": backward-word
+"\e[5~": history-search-backward
+"\e[6~": history-search-forward
+"""
+
 
 def parse_packages():
     pkgs = {}
@@ -695,6 +715,8 @@ def main():
             f.write(APT_PROXY_CONF)
         with open(os.path.join(root_dir, "etc/apt/sources.list"), "w") as f:
             f.write(SOURCES_LIST)
+        with open(os.path.join(root_dir, "etc/inputrc"), "w") as f:
+            f.write(INPUTRC_FILE)
 
         ssl_crt_src = os.path.join(root_dir, "usr/share/ca-certificates")
         if os.path.isdir(ssl_crt_src):
@@ -719,6 +741,11 @@ def main():
         with open(smp_path, "w") as f:
             f.write(SMP_RUN_PL)
         os.chmod(smp_path, 0o755)
+
+        for req_rel in ("usr/sbin/ldconfig", "usr/share/terminfo/x/xterm-256color", "usr/bin/apt-extracttemplates", "etc/inputrc"):
+            req_abs = os.path.join(root_dir, req_rel)
+            if not os.path.lexists(req_abs):
+                raise RuntimeError(f"Missing required initramfs file: {req_rel}")
 
         out_path = os.path.join(out_dir, "ubuntu-24.04-initrd.cpio.gz")
         print("Packing initramfs...")

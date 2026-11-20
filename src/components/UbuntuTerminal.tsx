@@ -5,6 +5,8 @@ import '@xterm/xterm/css/xterm.css';
 import { Plus, RotateCcw } from 'lucide-react';
 import { ubuntuRuntime } from '../runtime/ubuntuRuntime';
 
+let volatileClipboard = '';
+
 interface UbuntuTerminalProps {
   terminalIndex: number;
   totalThreads: number;
@@ -66,6 +68,61 @@ export const UbuntuTerminal: React.FC<UbuntuTerminalProps> = ({
     term.open(container);
     fitRef.current = fitAddon;
     termRef.current = term;
+
+    const handleCopy = () => {
+      const sel = term.getSelection();
+      if (!sel) return;
+      volatileClipboard = sel;
+      if (navigator.clipboard?.writeText) {
+        void navigator.clipboard.writeText(sel).catch(() => {});
+      }
+    };
+
+    const handlePaste = () => {
+      if (navigator.clipboard?.readText) {
+        void navigator.clipboard
+          .readText()
+          .then((text) => {
+            if (text) {
+              volatileClipboard = text;
+              term.paste(text);
+            } else if (volatileClipboard) {
+              term.paste(volatileClipboard);
+            }
+          })
+          .catch(() => {
+            if (volatileClipboard) {
+              term.paste(volatileClipboard);
+            }
+          });
+      } else if (volatileClipboard) {
+        term.paste(volatileClipboard);
+      }
+    };
+
+    term.attachCustomKeyEventHandler((ev: KeyboardEvent) => {
+      const hasModifier = (ev.ctrlKey || ev.metaKey) && ev.shiftKey && !ev.altKey;
+      if (hasModifier) {
+        const keyLower = ev.key.toLowerCase();
+        if (ev.code === 'KeyC' || keyLower === 'c') {
+          if (ev.type === 'keydown') {
+            ev.preventDefault();
+            ev.stopPropagation();
+            handleCopy();
+          }
+          return false;
+        }
+        if (ev.code === 'KeyV' || keyLower === 'v') {
+          if (ev.type === 'keydown') {
+            ev.preventDefault();
+            ev.stopPropagation();
+            handlePaste();
+          }
+          return false;
+        }
+      }
+      return true;
+    });
 
     const fitSafe = () => {
       try {
